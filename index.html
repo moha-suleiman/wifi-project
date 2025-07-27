@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WiFi Payment Portal</title>
+  <style>
+    body {
+  font-family: Arial, sans-serif;
+  background-color: #333;
+  color: #fff;
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: auto;
+  padding: 20px;
+}
+
+    #container {
+  background: rgb(54, 54, 53);
+  padding: 2rem;
+  border-radius: 8px;
+  box-shadow: 0 0 10px rgba(0,0,0,0.3);
+  text-align: center;
+  width: 100%;
+  max-width: 360px;
+  z-index: 2;
+}
+
+    button.offer {
+      display: block;
+      margin: 10px auto;
+      padding: 12px 20px;
+      font-size: 18px;
+      cursor: pointer;
+      width: 100%;
+      border: none;
+      border-radius: 5px;
+      background: #007bff;
+      color: white;
+    }
+
+    #status, #voucher {
+      margin-top: 15px;
+      font-size: 14px;
+    }
+
+    #voucher {
+      font-weight: bold;
+      color: green;
+      font-size: 18px;
+    }
+
+    canvas#spiderweb {
+      position: fixed;
+      top: 0;
+      left: 0;
+      z-index: 0;
+    }
+
+    /* Modal Styles */
+    .modal {
+      display: none;
+      position: fixed;
+      z-index: 999;
+      left: 0; top: 0;
+      width: 100%; height: 100%;
+      background-color: rgba(0,0,0,0.5);
+    }
+
+    .modal-content {
+      background-color: #fff;
+      color: #000;
+      margin: 15% auto;
+      padding: 20px;
+      border-radius: 8px;
+      width: 300px;
+      text-align: center;
+      position: relative;
+    }
+
+    .modal-content input {
+      padding: 10px;
+      width: 100%;
+      font-size: 16px;
+      margin-bottom: 10px;
+    }
+
+    .modal-content button {
+      padding: 10px;
+      width: 100%;
+      background: #28a745;
+      color: #fff;
+      border: none;
+      font-size: 16px;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+
+    .close {
+      position: absolute;
+      top: 5px;
+      right: 10px;
+      font-size: 20px;
+      cursor: pointer;
+      color: #aaa;
+    }
+    .close:hover {
+      color: #000;
+    }
+
+    #manualLink {
+      margin-top: 10px;
+      display: inline-block;
+      font-size: 14px;
+      color: #fff;
+      text-decoration: underline;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="spiderweb"></canvas>
+
+  <div id="container">
+    <h2>Select an Offer</h2>
+    <button class="offer" data-amount="10" data-duration="3600">10 sh - 1 hour</button>
+    <button class="offer" data-amount="15" data-duration="14400">15 sh - 4 hours</button>
+    <button class="offer" data-amount="20" data-duration="21600">20 sh - 6 hours</button>
+    <button class="offer" data-amount="30" data-duration="28800">30 sh - 8 hours</button>
+    <button class="offer" data-amount="40" data-duration="43200">40 sh - 12 hours</button>
+    <button class="offer" data-amount="50" data-duration="86400">50 sh - 24 hours</button>
+
+    <div id="status"></div>
+    <div id="voucher"></div>
+    <div id="manualLink"><b>Already paid? Enter M-PESA code</b></div>
+  </div>
+
+  <!-- Phone Modal -->
+  <div id="phoneModal" class="modal">
+    <div class="modal-content">
+      <span class="close" id="closeModal">&times;</span>
+      <label for="phoneNumber">Enter Phone Number</label>
+      <input type="tel" id="phoneNumber" placeholder="2547XXXXXXXX" />
+      <button id="submitPhone">Submit</button>
+    </div>
+  </div>
+
+  <!-- Manual M-PESA Code Modal -->
+  <div id="manualModal" class="modal">
+    <div class="modal-content">
+      <span class="close" id="closeManual">&times;</span>
+      <label for="mpesaCode">Enter M-PESA Code</label>
+      <input type="text" id="mpesaCode" placeholder="e.g. QJ23XYZ123" />
+      <button id="submitCode">Verify</button>
+    </div>
+  </div>
+
+  <script>
+    let selectedAmount = 0;
+    let selectedDuration = 0;
+    let checkoutRequestID = null;
+
+    const offers = document.querySelectorAll('button.offer');
+    const modal = document.getElementById('phoneModal');
+    const manualModal = document.getElementById('manualModal');
+    const closeModal = document.getElementById('closeModal');
+    const closeManual = document.getElementById('closeManual');
+    const phoneNumberInput = document.getElementById('phoneNumber');
+    const mpesaCodeInput = document.getElementById('mpesaCode');
+    const submitPhoneBtn = document.getElementById('submitPhone');
+    const submitCodeBtn = document.getElementById('submitCode');
+    const statusDiv = document.getElementById('status');
+    const voucherDiv = document.getElementById('voucher');
+    const manualLink = document.getElementById('manualLink');
+
+    offers.forEach(button => {
+      button.addEventListener('click', () => {
+        selectedAmount = button.dataset.amount;
+        selectedDuration = button.dataset.duration;
+        phoneNumberInput.value = '';
+        modal.style.display = 'block';
+        voucherDiv.textContent = '';
+        statusDiv.textContent = '';
+        phoneNumberInput.focus();
+      });
+    });
+
+    closeModal.onclick = () => modal.style.display = 'none';
+    closeManual.onclick = () => manualModal.style.display = 'none';
+
+    window.onclick = (e) => {
+      if (e.target === modal) modal.style.display = 'none';
+      if (e.target === manualModal) manualModal.style.display = 'none';
+    };
+
+    submitPhoneBtn.addEventListener('click', () => {
+      const phone = phoneNumberInput.value.trim();
+      if (!/^2547\d{8}$/.test(phone)) {
+        alert('Please enter a valid phone number in format 2547XXXXXXXX');
+        return;
+      }
+
+      modal.style.display = 'none';
+      statusDiv.textContent = 'Requesting payment... Please check your phone.';
+
+      fetch('/pay', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ phone: phone, amount: selectedAmount })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.CheckoutRequestID) {
+          checkoutRequestID = data.CheckoutRequestID;
+          pollPaymentStatus(checkoutRequestID);
+        } else {
+          statusDiv.textContent = 'Failed to initiate payment.';
+        }
+      })
+      .catch(() => {
+        statusDiv.textContent = 'Network error.';
+      });
+    });
+
+    function pollPaymentStatus(cid) {
+      let tries = 0;
+      statusDiv.textContent = 'Waiting for payment confirmation...';
+
+      const interval = setInterval(() => {
+        tries++;
+        if (tries > 20) {
+          clearInterval(interval);
+          statusDiv.textContent = 'Payment timed out. You can enter M-PESA code manually below.';
+          return;
+        }
+
+        fetch(`/status/${cid}?seconds=${selectedDuration}`)
+          .then(res => res.json())
+          .then(data => {
+            if (data.status === 'SUCCESS') {
+              clearInterval(interval);
+              statusDiv.textContent = 'Payment successful! Your voucher code:';
+              voucherDiv.textContent = data.voucher;
+            } else if (data.status === 'PENDING') {
+              statusDiv.textContent = 'Waiting for payment confirmation...';
+            } else {
+              clearInterval(interval);
+              statusDiv.textContent = 'Payment failed or cancelled.';
+            }
+          })
+          .catch(() => {
+            clearInterval(interval);
+            statusDiv.textContent = 'Error checking status.';
+          });
+
+      }, 5000);
+    }
+
+    // Manual M-PESA code flow
+    manualLink.addEventListener('click', () => {
+      mpesaCodeInput.value = '';
+      manualModal.style.display = 'block';
+      voucherDiv.textContent = '';
+      statusDiv.textContent = '';
+      mpesaCodeInput.focus();
+    });
+
+    submitCodeBtn.addEventListener('click', () => {
+      const code = mpesaCodeInput.value.trim();
+      if (!/^[A-Z0-9]{10,}$/i.test(code)) {
+        alert('Please enter a valid M-PESA code.');
+        return;
+      }
+
+      statusDiv.textContent = 'Verifying payment code...';
+      manualModal.style.display = 'none';
+
+      fetch('/verify-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.status === 'SUCCESS') {
+          statusDiv.textContent = 'Payment verified! Your voucher:';
+          voucherDiv.textContent = data.voucher;
+        } else {
+          statusDiv.textContent = 'Invalid or already used M-PESA code.';
+        }
+      })
+      .catch(() => {
+        statusDiv.textContent = 'Error verifying code.';
+      });
+    });
+
+    // Background canvas animation
+    const canvas = document.getElementById('spiderweb');
+    const ctx = canvas.getContext('2d');
+    let points = [];
+
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      points = [];
+      for (let i = 0; i < 100; i++) {
+        points.push({
+          x: Math.random() * canvas.width,
+          y: Math.random() * canvas.height,
+          vx: (Math.random() - 0.5) * 0.5,
+          vy: (Math.random() - 0.5) * 0.5,
+        });
+      }
+    }
+
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    let mouse = { x: null, y: null };
+    canvas.addEventListener('mousemove', e => {
+      mouse.x = e.clientX;
+      mouse.y = e.clientY;
+    });
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      points.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        if (p.x < 0 || p.x > canvas.width) p.vx *= -1;
+        if (p.y < 0 || p.y > canvas.height) p.vy *= -1;
+
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 2, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+      });
+
+      for (let i = 0; i < points.length; i++) {
+        for (let j = i + 1; j < points.length; j++) {
+          const dx = points[i].x - points[j].x;
+          const dy = points[i].y - points[j].y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 100) {
+            ctx.beginPath();
+            ctx.moveTo(points[i].x, points[i].y);
+            ctx.lineTo(points[j].x, points[j].y);
+            ctx.strokeStyle = `rgba(255, 255, 255, ${1 - dist / 100})`;
+            ctx.stroke();
+          }
+        }
+
+        if (mouse.x && mouse.y) {
+          const dx = points[i].x - mouse.x;
+          const dy = points[i].y - mouse.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 150) {
+            ctx.beginPath();
+            ctx.moveTo(points[i].x, points[i].y);
+            ctx.lineTo(mouse.x, mouse.y);
+            ctx.strokeStyle = `rgba(255, 255, 255, ${1 - dist / 150})`;
+            ctx.stroke();
+          }
+        }
+      }
+
+      requestAnimationFrame(draw);
+    }
+
+    draw();
+  </script>
+</body>
+</html>
