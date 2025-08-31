@@ -1,70 +1,71 @@
 from flask import Flask, request, jsonify
 import uuid
+import os
+from dotenv import load_dotenv
 import MySQLdb
 from mpesa_connect import App, STKPush
-from dotenv import load_dotenv
-import os
 
-# ✅ Load environment variables from .env
+# Load environment variables from .env
 load_dotenv()
 
-# 🔧 Initialize Flask app
+# Flask App
 app = Flask(__name__)
 
-# ✅ MySQL DB connection - update as needed
+# DB Connection (update credentials as needed)
 db = MySQLdb.connect(
     host='localhost',
-    user='radius',               # ✅ Change if different
-    passwd='radiuspass',         # ✅ Change if different
+    user='radius',
+    passwd='radiuspass',
     db='radius',
     port=3306
 )
 
-# ✅ M-PESA App Setup
-app_mp = App(
-    consumer_key=os.getenv("MPESA_CONSUMER_KEY"),  # ✅ From .env
+# M-PESA Configuration
+mpesa_app = App(
+    consumer_key=os.getenv("MPESA_CONSUMER_KEY"),
     consumer_secret=os.getenv("MPESA_CONSUMER_SECRET"),
-    short_code='174379',  # ✅ Replace with YOUR short code
-    passkey=os.getenv("MPESA_PASSKEY"),  # ✅ Your passkey from Daraja portal
-    callback_url='https://yourdomain.com/callback'  # ✅ Must be HTTPS and reachable
+    short_code='174379',
+    passkey=os.getenv("MPESA_PASSKEY"),
+    callback_url='https://paywifi.com/callback'  # MUST be HTTPS and reachable by Safaricom
 )
 
-# 🔐 Get M-PESA token and init STKPush
-token = app_mp.get_token()
-stk = STKPush(app_mp, access_token=token)
+access_token = mpesa_app.get_token()
+stkpush = STKPush(mpesa_app, access_token=access_token)
 
-# 🔁 Initiate STK Push
 @app.route('/pay', methods=['POST'])
 def pay():
-    d = request.json
-    checkout = stk.process_request(
-        phone_number=d['phone'],
-        amount=int(d['amount']),
+    data = request.get_json()
+    phone = data.get('phone')
+    amount = int(data.get('amount'))
+
+    res = stkpush.process_request(
+        phone_number=phone,
+        amount=amount,
         account_reference=str(uuid.uuid4())[:8],
-        transaction_desc='WiFi access'
+        transaction_desc='WiFi Access Payment'
     )
+
     return jsonify({
-        'CheckoutRequestID': checkout.get('CheckoutRequestID'),
-        'MerchantRequestID': checkout.get('MerchantRequestID')
+        'CheckoutRequestID': res.get('CheckoutRequestID'),
+        'MerchantRequestID': res.get('MerchantRequestID')
     })
 
+@app.route('/status/<checkout_id>', methods=['GET'])
+def status(checkout_id):
+    seconds = request.args.get('seconds', default='3600')
 
-# 🔄 Poll STK status & issue voucher if successful
-@app.route('/status/<cid>', methods=['GET'])
-def status(cid):
-    res = stk.query(
+    result = stkpush.query(
         business_short_code='174379',
-        checkout_request_id=cid
+        checkout_request_id=checkout_id
     )
 
-    if res.get('ResultCode') == '0':
+    if result.get('ResultCode') == '0':
         voucher = uuid.uuid4().hex[:8].upper()
         password = uuid.uuid4().hex[:6]
-        seconds = request.args.get('seconds', default='3600')
 
         cur = db.cursor()
 
-        # Insert voucher into FreeRADIUS radcheck table
+        # Insert into radcheck (FreeRADIUS auth)
         cur.execute("""
             INSERT INTO radcheck (username, attribute, op, value)
             VALUES (%s, 'Cleartext-Password', ':=', %s),
@@ -72,26 +73,27 @@ def status(cid):
                    (%s, 'Simultaneous-Use', ':=', '1')
         """, (voucher, password, voucher, seconds, voucher))
 
-        # Save to mpesa_payments for manual fallback
+        # Save to mpesa_payments
         cur.execute("""
             INSERT INTO mpesa_payments (checkout_id, voucher, password)
             VALUES (%s, %s, %s)
-        """, (cid, voucher, password))
+        """, (checkout_id, voucher, password))
 
         db.commit()
         return jsonify(status='SUCCESS', voucher=voucher, password=password)
+
+    elif result.get('ResultCode') == '1032':
+        return jsonify(status='CANCELLED')
     else:
-        return jsonify(status='PENDING', details=res)
+        return jsonify(status='PENDING')
 
-
-# ✅ Manual entry of M-PESA message code (fallback)
 @app.route('/verify-code', methods=['POST'])
 def verify_code():
     data = request.get_json()
-    code = data.get("code", "").strip().upper()
+    code = data.get('code', '').strip().upper()
 
     if not code or len(code) < 8 or not code.isalnum():
-        return jsonify({'status': 'INVALID', 'message': 'Code format is invalid'})
+        return jsonify({'status': 'INVALID', 'message': 'Invalid M-PESA code format'})
 
     cur = db.cursor()
     cur.execute("""
@@ -106,12 +108,21 @@ def verify_code():
     else:
         return jsonify({'status': 'INVALID', 'message': 'Code not found or already used'})
 
+@app.route('/callback', methods=['POST'])
+def callback():
+    # Log M-PESA transaction (optional)
+    data = request.get_json()
+    with open('mpesa_callback.log', 'a') as f:
+        f.write(str(data) + '\n')
+    return '', 200
 
-# 🛰️ Register user device
 @app.route('/register_device', methods=['POST'])
 def register_device():
-    d = request.json
-    mac, ip, voucher = d['mac'], d['ip'], d['voucher']
+    data = request.json
+    voucher = data.get('voucher')
+    mac = data.get('mac')
+    ip = data.get('ip')
+
     cur = db.cursor()
     cur.execute("""
         INSERT INTO device_map (voucher, mac, ip)
@@ -120,15 +131,6 @@ def register_device():
     db.commit()
     return '', 204
 
-
-# 🔔 M-PESA callback handler (you can log this for auditing)
-@app.route('/callback', methods=['POST'])
-def callback():
-    data = request.get_json()
-    # Log or handle data['Body'] as needed (optional)
-    return '', 200
-
-
-# 🚀 Start server
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
