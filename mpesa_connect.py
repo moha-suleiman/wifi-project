@@ -1,4 +1,3 @@
-# mpesa_connect.py
 import base64
 import datetime
 import requests
@@ -13,11 +12,11 @@ class App:
     callback_url: str
 
     def get_token(self):
-        response = requests.get(
-            "https://api.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
+        res = requests.get(
+            "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
             auth=(self.consumer_key, self.consumer_secret)
         )
-        return response.json().get('access_token')
+        return res.json().get("access_token")
 
 @dataclass
 class STKPush:
@@ -50,7 +49,7 @@ class STKPush:
         }
 
         res = requests.post(
-            "https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
+            "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
             json=payload,
             headers=headers
         )
@@ -75,9 +74,8 @@ class STKPush:
         }
 
         res = requests.post(
-            "https://api.safaricom.co.ke/mpesa/stkpushquery/v1/query",
+            "https://sandbox.safaricom.co.ke/mpesa/stkpushquery/v1/query",
             json=payload,
             headers=headers
         )
         return res.json()
-
